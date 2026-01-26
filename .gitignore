@@ -1,0 +1,39 @@
+# Environment variables (PALING PENTING!)
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+
+# Authentication data (Baileys WhatsApp session)
+auth_info_baileys/
+auth/
+
+# Database (berisi config & potentially nomor target)
+database.json
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Optional: jika ada backup files
+*.bak
+*.backup
