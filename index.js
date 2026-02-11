@@ -5,6 +5,7 @@ import pino from 'pino'
 import qrcode from 'qrcode-terminal'
 import TelegramBot from 'node-telegram-bot-api'
 import fs from 'fs'
+import path from 'path'
 
 // --- CONFIGURATION MANAGEMENT ---
 const DB_PATH = './database.json'
@@ -12,7 +13,14 @@ let config = {
     targets: [], // Changed from single target to array
     message: 'Selamat ',
     interval: 5000,
-    isRunning: false
+    isRunning: false,
+    imagePath: null
+}
+
+// Ensure media directory exists
+const MEDIA_DIR = './media'
+if (!fs.existsSync(MEDIA_DIR)) {
+    fs.mkdirSync(MEDIA_DIR)
 }
 
 // Load config from disk
@@ -54,11 +62,12 @@ let OWNER_ID = null
 
 // Simple logging for Telegram errors
 telegramBot.on('polling_error', (error) => {
-    console.log('Telegram Polling Error:', error.code);  // E.g. ETELEGRAM
+    console.log('Telegram Polling Error:', error.code, error.message);
 });
 
 telegramBot.on('message', (msg) => {
     const chatId = msg.chat.id
+    console.log(`📩 Received message from ${chatId}:`, msg.text || msg.caption || '[Media]')
 
     // First person to message becomes owner (temporary logic for convenience)
     if (!OWNER_ID) {
@@ -68,11 +77,15 @@ telegramBot.on('message', (msg) => {
     }
 
     // Security Check
-    if (chatId !== OWNER_ID) return
+    if (chatId !== OWNER_ID) {
+        console.log(`⛔ Ignored message from non-owner: ${chatId}`)
+        return
+    }
 })
 
 // COMMANDS
 telegramBot.onText(/\/start/, (msg) => {
+    console.log('➡️ Command: /start')
     if (msg.chat.id !== OWNER_ID) return;
     if (!config.targets || config.targets.length === 0) {
         return telegramBot.sendMessage(msg.chat.id, '⚠️ Belum ada target! Gunakan `/addtarget [nomor]` dulu.')
@@ -85,6 +98,7 @@ telegramBot.onText(/\/start/, (msg) => {
 })
 
 telegramBot.onText(/\/stop/, (msg) => {
+    console.log('➡️ Command: /stop')
     if (msg.chat.id !== OWNER_ID) return;
     config.isRunning = false
     saveConfig()
@@ -101,10 +115,84 @@ telegramBot.onText(/\/status/, (msg) => {
 🎯 **Total Target**: ${config.targets.length}
 ⏱ **Interval**: ${config.interval} ms
 💬 **Pesan**: "${config.message}"
+🖼 **Gambar**: ${config.imagePath ? '✅ Ada' : '❌ Tidak ada'}
 
 Ketik /listtarget untuk lihat detail.
     `
     telegramBot.sendMessage(msg.chat.id, status, { parse_mode: 'Markdown' })
+})
+
+// --- MEDIA MANAGEMENT ---
+
+// SET IMAGE (Upload via Telegram)
+telegramBot.on('photo', async (msg) => {
+    console.log('📸 Photo event received')
+    if (msg.chat.id !== OWNER_ID) return;
+
+    // Check if caption contains /setimage (or just assume any photo is for setting image if we want)
+    if (msg.caption && msg.caption.includes('/setimage')) {
+        console.log('📸 Processing /setimage from caption...')
+        try {
+            const fileId = msg.photo[msg.photo.length - 1].file_id // Get highest res
+            console.log('⬇️ Downloading file:', fileId)
+            const filePath = await telegramBot.downloadFile(fileId, MEDIA_DIR)
+
+            config.imagePath = filePath
+            saveConfig()
+
+            console.log('✅ Image saved to:', filePath)
+            telegramBot.sendMessage(msg.chat.id, `✅ Gambar berhasil diset!\nPath: \`${filePath}\``, { parse_mode: 'Markdown' })
+        } catch (e) {
+            console.error('Download failed:', e)
+            telegramBot.sendMessage(msg.chat.id, `❌ Gagal download gambar: ${e.message}`)
+        }
+    } else {
+        console.log('📸 Photo received but no /setimage caption')
+    }
+})
+
+// Allow setting image by replying to a photo
+telegramBot.onText(/\/setimage/, async (msg) => {
+    console.log('➡️ Command: /setimage (Text/Reply)')
+    if (msg.chat.id !== OWNER_ID) return;
+
+    if (msg.reply_to_message && msg.reply_to_message.photo) {
+        console.log('📸 Processing /setimage from Reply...')
+        try {
+            const fileId = msg.reply_to_message.photo[msg.reply_to_message.photo.length - 1].file_id
+            const filePath = await telegramBot.downloadFile(fileId, MEDIA_DIR)
+
+            config.imagePath = filePath
+            saveConfig()
+
+            telegramBot.sendMessage(msg.chat.id, `✅ Gambar berhasil diset (dari reply)!\nPath: \`${filePath}\``, { parse_mode: 'Markdown' })
+        } catch (e) {
+            console.error('Reply Download failed:', e)
+            telegramBot.sendMessage(msg.chat.id, `❌ Gagal download gambar: ${e.message}`)
+        }
+    } else if (!msg.caption) {
+        // If just text command without photo/reply
+        console.log('⚠️ /setimage called without photo')
+        telegramBot.sendMessage(msg.chat.id, 'kirim Foto dengan caption `/setimage` atau Reply sebuah foto dengan `/setimage`.', { parse_mode: 'Markdown' })
+    }
+})
+
+
+// CLEAR IMAGE
+telegramBot.onText(/\/clearimage/, (msg) => {
+    if (msg.chat.id !== OWNER_ID) return;
+
+    if (config.imagePath && fs.existsSync(config.imagePath)) {
+        try {
+            fs.unlinkSync(config.imagePath)
+        } catch (e) {
+            console.error('Delete failed:', e)
+        }
+    }
+
+    config.imagePath = null
+    saveConfig()
+    telegramBot.sendMessage(msg.chat.id, '🗑 Gambar dihapus. Kembali ke mode teks.')
 })
 
 // --- BROADCAST TARGET MANAGEMENT ---
@@ -203,6 +291,8 @@ telegramBot.onText(/\/help/, (msg) => {
 /cleartargets - Hapus semua target
 /setmsg [pesan] - Set isi pesan ("Selamat " = auto waktu)
 /setinterval [ms] - Set jeda waktu
+/setimage - Kirim foto dengan caption ini atau reply foto dengan perintah ini untuk set gambar
+/clearimage - Hapus gambar yang diset
     `
     telegramBot.sendMessage(msg.chat.id, help)
 })
@@ -270,8 +360,19 @@ async function startMessageLoop(sock) {
                         }
                     }
 
-                    await sock.sendMessage(targetJid, { text: finalMessage })
-                    console.log(`📨 Sent to ${targetJid}: ${finalMessage}`)
+                    // Check if Image is set
+                    if (config.imagePath && fs.existsSync(config.imagePath)) {
+                        const imageBuffer = fs.readFileSync(config.imagePath)
+                        await sock.sendMessage(targetJid, {
+                            image: imageBuffer,
+                            caption: finalMessage
+                        })
+                        console.log(`📸 Sent IMAGE to ${targetJid}`)
+                    } else {
+                        // Text only
+                        await sock.sendMessage(targetJid, { text: finalMessage })
+                        console.log(`📨 Sent TEXT to ${targetJid}: ${finalMessage}`)
+                    }
 
                     // Small delay between sends to prevent instant ban / rate limit
                     await new Promise(r => setTimeout(r, 1000))
