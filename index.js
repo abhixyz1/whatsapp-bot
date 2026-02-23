@@ -59,6 +59,7 @@ const telegramBot = new TelegramBot(token, { polling: true })
 
 // Helper to check/save owner (simple security)
 let OWNER_ID = null
+let globalSock = null
 
 // Simple logging for Telegram errors
 telegramBot.on('polling_error', (error) => {
@@ -246,9 +247,52 @@ telegramBot.onText(/\/listtarget/, (msg) => {
 
     let list = '📋 **DAFTAR TARGET**:\n'
     config.targets.forEach((t, i) => {
-        list += `${i + 1}. \`${t}\`\n`
+        const icon = t.endsWith('@g.us') ? '👥' : '👤';
+        list += `${i + 1}. ${icon} \`${t}\`\n`
     })
     telegramBot.sendMessage(msg.chat.id, list, { parse_mode: 'Markdown' })
+})
+
+// LIST GROUPS
+telegramBot.onText(/\/listgroups/, async (msg) => {
+    console.log('➡️ Command: /listgroups')
+    if (msg.chat.id !== OWNER_ID) return;
+
+    if (!globalSock) {
+        return telegramBot.sendMessage(msg.chat.id, '⚠️ WhatsApp belum terkoneksi. Scan QR dulu atau tunggu sebentar.')
+    }
+
+    try {
+        telegramBot.sendMessage(msg.chat.id, '⏳ Mengambil data grup...')
+        const groups = await globalSock.groupFetchAllParticipating()
+        let listText = '🏢 **DAFTAR GRUP WHATSAPP**:\n\n'
+        let count = 1
+        for (const id in groups) {
+            const group = groups[id]
+            // Sanitize group name to prevent Markdown parsing errors
+            const safeSubject = (group.subject || 'Unnamed Group').replace(/[*_`\[\]()~#>+=|{}.!-]/g, '')
+            const nextLine = `${count}. **${safeSubject}**\n   ID: \`${id}\`\n\n`
+
+            // Telegram max message length is 4096. Split if it gets too big.
+            if ((listText.length + nextLine.length) > 3900) {
+                await telegramBot.sendMessage(msg.chat.id, listText, { parse_mode: 'Markdown' })
+                listText = '' // Reset for next batch
+            }
+            listText += nextLine
+            count++
+        }
+
+        if (count === 1) {
+            listText = '📭 Kamu belum bergabung ke grup mana pun.'
+        }
+
+        if (listText.trim().length > 0) {
+            telegramBot.sendMessage(msg.chat.id, listText, { parse_mode: 'Markdown' })
+        }
+    } catch (err) {
+        console.error('Failed to fetch groups:', err)
+        telegramBot.sendMessage(msg.chat.id, `❌ Gagal mengambil grup: ${err.message}`)
+    }
 })
 
 // CLEAR ALL
@@ -260,11 +304,19 @@ telegramBot.onText(/\/cleartargets/, (msg) => {
 })
 
 
-telegramBot.onText(/\/setmsg (.+)/, (msg, match) => {
+telegramBot.onText(/\/setmsg([\s\S]*)/, (msg, match) => {
     if (msg.chat.id !== OWNER_ID) return;
-    config.message = match[1]
+
+    // Trim to remove leading spaces right after the command
+    const newMsg = match[1].trim()
+
+    if (!newMsg) {
+        return telegramBot.sendMessage(msg.chat.id, '⚠️ Pesan tidak boleh kosong. Gunakan: `/setmsg [isi pesan]`', { parse_mode: 'Markdown' })
+    }
+
+    config.message = newMsg
     saveConfig()
-    telegramBot.sendMessage(msg.chat.id, `💬 Pesan diubah: "${config.message}"`)
+    telegramBot.sendMessage(msg.chat.id, `💬 Pesan diubah menjadi:\n\n${config.message}`)
 })
 
 telegramBot.onText(/\/setinterval (\d+)/, (msg, match) => {
@@ -288,6 +340,7 @@ telegramBot.onText(/\/help/, (msg) => {
 /addtarget [nomor] - Tambah target
 /deltarget [nomor] - Hapus target
 /listtarget - Lihat daftar target
+/listgroups - Lihat daftar ID Grup WhatsApp
 /cleartargets - Hapus semua target
 /setmsg [pesan] - Set isi pesan ("Selamat " = auto waktu)
 /setinterval [ms] - Set jeda waktu
@@ -323,6 +376,7 @@ async function connectToWhatsApp() {
             if (shouldReconnect) connectToWhatsApp()
         } else if (connection === 'open') {
             console.log('✅ WhatsApp Connected!')
+            globalSock = sock
             startMessageLoop(sock)
         }
     })
@@ -374,8 +428,14 @@ async function startMessageLoop(sock) {
                         console.log(`📨 Sent TEXT to ${targetJid}: ${finalMessage}`)
                     }
 
-                    // Small delay between sends to prevent instant ban / rate limit
-                    await new Promise(r => setTimeout(r, 1000))
+                    // Randomized delay for safety
+                    // Personal: 2-5 sec | Group: 8-15 sec
+                    const minDelay = targetJid.endsWith('@g.us') ? 8000 : 2000;
+                    const maxDelay = targetJid.endsWith('@g.us') ? 15000 : 5000;
+                    const randomDelay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+
+                    console.log(`⏳ Waiting ${Math.round(randomDelay / 1000)}s before next message...`);
+                    await new Promise(r => setTimeout(r, randomDelay))
 
                 } catch (err) {
                     console.error(`❌ Send failed to ${targetJid}:`, err.message)
